@@ -1,64 +1,57 @@
 use std::{env, fs};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_appender::non_blocking::WorkerGuard;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
 use mlua::{Lua, Table, HookTriggers, VmState};
-use crate::{logging, odbc_lua, util_lua};
+use crate::{log_lua, odbc_lua, util_lua};
+use crate::config::Config;
 
 pub struct Host {
-    _log_guard: Result<Option<WorkerGuard>>,
     lua: Lua,
 }
 
 impl Host {
     /// Initialisiert alles
-    pub fn new() -> Result<Host> {
-        let _log_guard = logging::init_logging();
-
+    pub fn new(config: &Config) -> Result<Host> {
         // Verzeichnis der laufenden Exe bestimmen
         let exe_dir = env::current_exe()?
             .parent().ok_or(anyhow!("No parent directory"))?
             .to_path_buf();
-        tracing::info!("Executing in {}", exe_dir.display());
+        tracing::trace!("Executing in {}", exe_dir.display());
         
         // Lua Umgebung erzeugen und Funktionen registrieren
         let lua = Lua::new();
         odbc_lua::register(&lua)?;
-        logging::register(&lua)?;
+        log_lua::register(&lua)?;
         util_lua::register(&lua)?;
+        cred_lua::register(&lua)?;
 
         // Lua Path erweitern, damit require("foo") auch scripts/foo.lua findet
+        // Add scripts parent to path
         let package: Table = lua.globals().get("package")?;
         let old_path: String = package.get("path")?;
-        let scripts_dir = exe_dir.join("scripts");
-        let new_path = format!(
-            "{};{}",
-            scripts_dir.join("?.lua").display(),
-            old_path
-        );
-        package.set("path", new_path)?;
-        
+        if let Some(scripts_dir) = config.config_path.join(config.script.clone().unwrap_or_default()).parent() {
+            let new_path = format!(
+                "{};{}",
+                scripts_dir.join("?.lua").display(),
+                old_path
+            );
+            package.set("path", new_path)?;
+        }
+
         Ok(Host {
-            _log_guard,
             lua,
         })
     }
 
     /// Main Logic Execution
-    pub fn execute(&mut self) -> Result<()> {
-        // Verzeichnis der laufenden Exe bestimmen
-        let exe_dir = env::current_exe()?
-            .parent().ok_or(anyhow!("No parent directory"))?
-            .to_path_buf();
-
-        // scripts/main.lua finden
-        let scripts_dir = exe_dir.join("scripts");
-        let script_path = scripts_dir.join("main.lua");
-        let code = fs::read_to_string(&script_path)?;
+    pub fn execute(&mut self, script_path: PathBuf) -> Result<()> {
+        tracing::trace!("Executing code of {}", script_path.display());
+        let code = fs::read_to_string(&script_path).context("Reading configured script")?;
 
         // Lua ausführen
-        tracing::trace!("Executing code of {}", script_path.display());
         // "@" davor sorgt dafür, dass Fehlermeldungen den Dateinamen zeigen
         self.lua.load(&code)
             .set_name(format!("@{}", script_path.display()))
@@ -81,7 +74,7 @@ impl Host {
             HookTriggers::new().every_nth_instruction(1000),
             move |_lua, _debug| {
                 if stop.load(Ordering::Relaxed) {
-                    Err(mlua::Error::runtime("Service wird beendet"))
+                    Err(mlua::Error::runtime("service stopping"))
                 } else {
                     Ok(VmState::Continue)
                 }

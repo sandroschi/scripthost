@@ -7,6 +7,8 @@ edition = "2024"
 anyhow = { version= "1.0.104", features = ["backtrace"] }
 chrono = "0.4.45"
 encoding_rs = "0.8.44"
+file-rotate = "0.8.0"
+humantime-serde = "1.1.1"
 mlua = { version = "0.12.2", features = ["anyhow", "lua54", "vendored"] }
 odbc-api = "30.1.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -23,3 +25,7 @@ signal-hook = "0.4.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.1"
+keyring = { version = "4.2.0", features = ["windows-native"] }   # Windows-Anmeldeinformationsverwaltung
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "4.2.0", features = ["sync-secret-service"] }  # D-Bus Secret Service
